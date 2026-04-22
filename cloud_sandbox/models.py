@@ -25,6 +25,19 @@ class ExecResult:
 
 
 @dataclass(slots=True)
+class GcpConnectorConfig:
+    project_id: str
+    bigquery_default_dataset: str | None = None
+    gcs_bucket: str | None = None
+    firestore_collection: str | None = None
+
+
+@dataclass(slots=True)
+class SessionConnectorConfig:
+    gcp: GcpConnectorConfig | None = None
+
+
+@dataclass(slots=True)
 class InstallRequest:
     packages: list[str]
 
@@ -46,6 +59,7 @@ class SessionInfo:
     image: str
     runtime_class: str
     ttl_seconds: float
+    connectors: SessionConnectorConfig | None
     created_at: str
     updated_at: str
     expires_at: str
@@ -67,6 +81,7 @@ class SessionCreateRequest:
     ttl_seconds: float | None = None
     image: str | None = None
     runtime_class: str | None = None
+    connectors: SessionConnectorConfig | None = None
 
 
 def result_to_dict(result: ExecResult) -> dict[str, Any]:

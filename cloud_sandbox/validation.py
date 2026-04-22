@@ -6,6 +6,11 @@ import re
 DEFAULT_SESSION_TTL_SECONDS = 3600.0
 MAX_SESSION_TTL_SECONDS = 24 * 60 * 60
 
+GCP_PROJECT_ID_RE = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+BIGQUERY_DATASET_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,1023}$")
+GCS_BUCKET_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$")
+FIRESTORE_COLLECTION_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
 _PACKAGE_REQUIREMENT_RE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9_.-]*"
     r"(?:\[[A-Za-z0-9_.,-]+\])?"
@@ -33,7 +38,7 @@ _PROTECTED_ENV_KEYS = {
     "XDG_CACHE_HOME",
 }
 
-_RESERVED_WORKSPACE_FILES = {"main.py"}
+_RESERVED_WORKSPACE_FILES = {"main.py", "_cloud_sandbox_runtime.py"}
 
 
 def normalize_session_ttl(ttl_seconds: float | int | None) -> float:
@@ -82,3 +87,41 @@ def validate_workspace_filename(path: str) -> str:
     if path in _RESERVED_WORKSPACE_FILES:
         raise ValueError(f"workspace file path is reserved: {path!r}")
     return path
+
+
+def validate_gcp_project_id(project_id: str) -> str:
+    normalized = project_id.strip()
+    if not normalized:
+        raise ValueError("gcp project_id cannot be empty")
+    if not GCP_PROJECT_ID_RE.fullmatch(normalized):
+        raise ValueError(f"invalid gcp project_id: {project_id!r}")
+    return normalized
+
+
+def validate_bigquery_dataset_id(dataset_id: str) -> str:
+    normalized = dataset_id.strip()
+    if not normalized:
+        raise ValueError("bigquery dataset id cannot be empty")
+    if not BIGQUERY_DATASET_ID_RE.fullmatch(normalized):
+        raise ValueError(f"invalid bigquery dataset id: {dataset_id!r}")
+    return normalized
+
+
+def validate_gcs_bucket_name(bucket_name: str) -> str:
+    normalized = bucket_name.strip()
+    if not normalized:
+        raise ValueError("gcs bucket name cannot be empty")
+    if not GCS_BUCKET_NAME_RE.fullmatch(normalized):
+        raise ValueError(f"invalid gcs bucket name: {bucket_name!r}")
+    return normalized
+
+
+def validate_firestore_collection_name(collection_name: str) -> str:
+    normalized = collection_name.strip()
+    if not normalized:
+        raise ValueError("firestore collection name cannot be empty")
+    if "/" in normalized:
+        raise ValueError(f"firestore collection name may not contain '/': {collection_name!r}")
+    if not FIRESTORE_COLLECTION_NAME_RE.fullmatch(normalized):
+        raise ValueError(f"invalid firestore collection name: {collection_name!r}")
+    return normalized

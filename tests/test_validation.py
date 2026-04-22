@@ -3,6 +3,10 @@ from __future__ import annotations
 import unittest
 
 from cloud_sandbox.validation import (
+    validate_bigquery_dataset_id,
+    validate_firestore_collection_name,
+    validate_gcp_project_id,
+    validate_gcs_bucket_name,
     normalize_session_ttl,
     validate_env_name,
     validate_requirement,
@@ -40,6 +44,28 @@ class ValidationTests(unittest.TestCase):
             normalize_session_ttl(float("nan"))
         with self.assertRaises(ValueError):
             normalize_session_ttl(24 * 60 * 60 + 1)
+
+    def test_validate_gcp_connector_names(self) -> None:
+        self.assertEqual(validate_gcp_project_id("sandbox-proj"), "sandbox-proj")
+        self.assertEqual(validate_bigquery_dataset_id("analytics"), "analytics")
+        self.assertEqual(validate_gcs_bucket_name("sandbox-bucket"), "sandbox-bucket")
+        self.assertEqual(validate_firestore_collection_name("session_metadata"), "session_metadata")
+
+        for bad in ("", "bad id", "UPPER", "a"):
+            with self.assertRaises(ValueError):
+                validate_gcp_project_id(bad)
+
+        for bad in ("", "bad-dataset", "bad.dataset"):
+            with self.assertRaises(ValueError):
+                validate_bigquery_dataset_id(bad)
+
+        for bad in ("", "bad bucket", "UPPER"):
+            with self.assertRaises(ValueError):
+                validate_gcs_bucket_name(bad)
+
+        for bad in ("", "bad/name", "bad.collection"):
+            with self.assertRaises(ValueError):
+                validate_firestore_collection_name(bad)
 
 
 if __name__ == "__main__":

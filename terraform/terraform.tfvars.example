@@ -1,0 +1,17 @@
+project_id                      = "my-gcp-project"
+kubernetes_namespace            = "sandbox"
+kubernetes_service_account_name = "cloud-sandbox"
+google_service_account_id       = "cloud-sandbox-runtime"
+
+project_roles = [
+  "roles/bigquery.jobUser",
+  "roles/datastore.user",
+]
+
+bigquery_dataset_roles = {
+  analytics = "roles/bigquery.dataViewer"
+}
+
+gcs_bucket_roles = {
+  sandbox-bucket = "roles/storage.objectAdmin"
+}

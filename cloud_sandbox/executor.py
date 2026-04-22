@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -45,6 +46,22 @@ def _snapshot_files(workspace: Path) -> set[str]:
     return snapshot
 
 
+def build_session_bootstrap_source(user_code: str) -> str:
+    encoded_user_code = json.dumps(user_code)
+    return (
+        "import os\n"
+        "import sys\n"
+        "workspace_dir = os.path.dirname(__file__)\n"
+        "if workspace_dir and workspace_dir not in sys.path:\n"
+        "    sys.path.insert(0, workspace_dir)\n"
+        "from _cloud_sandbox_runtime import sandbox\n"
+        "sandbox_capabilities = sandbox.capabilities()\n"
+        "globals()['sandbox'] = sandbox\n"
+        "globals()['sandbox_capabilities'] = sandbox_capabilities\n"
+        f"exec(compile({encoded_user_code}, '<sandbox>', 'exec'), globals(), globals())\n"
+    )
+
+
 def _build_env(
     workspace: Path,
     user_env: dict[str, str],
@@ -88,12 +105,13 @@ def execute_python_in_workspace(
     workspace: Path,
     python_executable: str | None = None,
     extra_env: dict[str, str] | None = None,
+    script_source: str | None = None,
 ) -> ExecResult:
     started = perf_counter()
     workspace.mkdir(parents=True, exist_ok=True)
     _write_workspace_files(workspace, request.files)
     script_path = workspace / "main.py"
-    script_path.write_text(request.code, encoding="utf-8")
+    script_path.write_text(script_source or request.code, encoding="utf-8")
 
     before = _snapshot_files(workspace)
     env = _build_env(

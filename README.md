@@ -5,9 +5,11 @@ Prototype sandbox service for agent-driven code execution.
 The basic shape is:
 
 - agents can send Python code to a stateless `/exec` endpoint
-- agents can also create a session, install Python dependencies, and run multiple execs in the same workspace
+- agents can create a session, install Python dependencies, and run multiple execs in the same workspace
+- sessions can be created with GCP connector targets for BigQuery, Firestore, and GCS
 - the service writes code into a workspace on disk
 - code runs in a subprocess inside the sandbox container
+- the generated code receives a `sandbox` object with connector helpers and capability introspection
 - Kubernetes can place the pod under `gVisor` via `runtimeClassName: gvisor`
 - outputs come back as JSON: stdout, stderr, exit code, duration, and artifact paths
 
@@ -22,12 +24,6 @@ python -m cloud_sandbox
 
 The server listens on `PORT` if set, otherwise `8080`.
 
-If you want auth, set `SANDBOX_AUTH_TOKEN` and send a bearer token on control routes:
-
-```bash
-export SANDBOX_AUTH_TOKEN=dev-token
-```
-
 ## Health check
 
 ```bash
@@ -38,20 +34,33 @@ curl http://localhost:8080/health
 
 ```bash
 curl -X POST http://localhost:8080/sessions \
-  -H 'Authorization: Bearer dev-token' \
   -H 'Content-Type: application/json' \
   -d '{
     "ttl_seconds": 60,
     "image": "cloud-sandbox:latest",
-    "runtime_class": "gvisor"
+    "runtime_class": "gvisor",
+    "connectors": {
+      "gcp": {
+        "project_id": "sandbox-proj",
+        "bigquery_default_dataset": "analytics",
+        "gcs_bucket": "sandbox-bucket",
+        "firestore_collection": "session_metadata"
+      }
+    }
   }'
+```
+
+The session response includes a capability manifest, and the same data is available at:
+
+```bash
+curl http://localhost:8080/capabilities
+curl http://localhost:8080/sessions/<session-id>/capabilities
 ```
 
 ## Install dependencies in a session
 
 ```bash
 curl -X POST http://localhost:8080/sessions/<session-id>/install \
-  -H 'Authorization: Bearer dev-token' \
   -H 'Content-Type: application/json' \
   -d '{
     "packages": ["pandas==2.2.3"]
@@ -62,7 +71,6 @@ curl -X POST http://localhost:8080/sessions/<session-id>/install \
 
 ```bash
 curl -X POST http://localhost:8080/exec \
-  -H 'Authorization: Bearer dev-token' \
   -H 'Content-Type: application/json' \
   -d '{
     "code": "print(\"hello from the sandbox\")",
@@ -76,29 +84,33 @@ To run code inside a session:
 
 ```bash
 curl -X POST http://localhost:8080/sessions/<session-id>/exec \
-  -H 'Authorization: Bearer dev-token' \
   -H 'Content-Type: application/json' \
   -d '{
-    "code": "print(\"hello from the session\")",
+    "code": "print(sandbox.capabilities()[\"connectors\"][\"gcp\"][\"project_id\"])",
     "timeout_seconds": 10
   }'
+```
+
+Inside generated code, the `sandbox` object exposes:
+
+```python
+df = sandbox.bigquery.query_df("select * from project.dataset.table limit 1000")
+sandbox.firestore.write_metadata("runs/run_123", {"rows": len(df)})
+sandbox.gcs.upload_bytes(b"payload", "gs://sandbox-bucket/artifacts/run_123.bin")
 ```
 
 ## Inspect a session
 
 ```bash
 curl http://localhost:8080/sessions/<session-id> \
-  -H 'Authorization: Bearer dev-token'
 ```
 
 ```bash
-curl http://localhost:8080/sessions/<session-id>/artifacts \
-  -H 'Authorization: Bearer dev-token'
+curl http://localhost:8080/sessions/<session-id>/artifacts
 ```
 
 ```bash
-curl -X DELETE http://localhost:8080/sessions/<session-id> \
-  -H 'Authorization: Bearer dev-token'
+curl -X DELETE http://localhost:8080/sessions/<session-id>
 ```
 
 ## Kubernetes
@@ -119,21 +131,29 @@ kubectl apply -f k8s/runtimeclass-gvisor.yaml
 kubectl apply -k k8s/base
 ```
 
+## Workload identity
+
+If you want the sandbox pod to use Google Cloud APIs from inside generated code, apply the Terraform stack in `terraform/` first.
+It creates the Google service account, grants the GCP IAM roles, and outputs the annotation you should place on the `cloud-sandbox`
+Kubernetes service account.
+
 ## What exists right now
 
 - `GET /health`
 - `GET /`
+- `GET /capabilities`
 - `POST /exec`
 - `POST /sessions`
 - `GET /sessions/{id}`
 - `DELETE /sessions/{id}`
 - `POST /sessions/{id}/exec`
 - `POST /sessions/{id}/install`
+- `GET /sessions/{id}/capabilities`
 - `GET /sessions/{id}/artifacts`
 - Python subprocess execution
 - temp workspaces for each request
 - session-backed workspaces and virtualenvs
-- bearer auth when `SANDBOX_AUTH_TOKEN` is set
+- session-scoped GCP connector config and runtime injection
 - gVisor-ready Kubernetes deployment scaffold
 
 ## What is not here yet

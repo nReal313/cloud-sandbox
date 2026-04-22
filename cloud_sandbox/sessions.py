@@ -11,8 +11,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from .executor import execute_python_in_workspace, _snapshot_files
-from .models import ExecRequest, ExecResult, InstallResult, SessionInfo
+from .connectors import (
+    RUNTIME_MODULE_FILENAME,
+    build_service_capabilities,
+    build_session_capabilities,
+    render_runtime_source,
+)
+from .executor import build_session_bootstrap_source, execute_python_in_workspace, _snapshot_files
+from .models import ExecRequest, ExecResult, InstallResult, SessionConnectorConfig, SessionInfo
 from .validation import normalize_session_ttl, validate_requirements
 
 SESSION_STATUS_ACTIVE = "active"
@@ -55,6 +61,7 @@ class SessionRecord:
     image: str
     runtime_class: str
     ttl_seconds: float
+    connectors: SessionConnectorConfig | None
     created_at: datetime
     updated_at: datetime
     expires_at: datetime
@@ -78,6 +85,7 @@ class SessionRecord:
             image=self.image,
             runtime_class=self.runtime_class,
             ttl_seconds=self.ttl_seconds,
+            connectors=self.connectors,
             created_at=_to_iso(self.created_at) or "",
             updated_at=_to_iso(self.updated_at) or "",
             expires_at=_to_iso(self.expires_at) or "",
@@ -122,6 +130,7 @@ class SessionManager:
         ttl_seconds: float | int | None = None,
         image: str | None = None,
         runtime_class: str | None = None,
+        connectors: SessionConnectorConfig | None = None,
         idempotency_key: str | None = None,
     ) -> tuple[SessionInfo, bool]:
         ttl = normalize_session_ttl(ttl_seconds if ttl_seconds is not None else self._default_ttl_seconds)
@@ -142,6 +151,9 @@ class SessionManager:
         if not python_executable.exists():
             raise RuntimeError(f"venv python executable not found at {python_executable}")
 
+        runtime_module_path = code_dir / RUNTIME_MODULE_FILENAME
+        runtime_module_path.write_text(render_runtime_source(connectors), encoding="utf-8")
+
         created_at = _utcnow()
         record = SessionRecord(
             session_id=session_id,
@@ -150,6 +162,7 @@ class SessionManager:
             image=image or self._default_image,
             runtime_class=runtime_class or self._default_runtime_class,
             ttl_seconds=ttl,
+            connectors=connectors,
             created_at=created_at,
             updated_at=created_at,
             expires_at=created_at + timedelta(seconds=ttl),
@@ -172,6 +185,13 @@ class SessionManager:
     def get_artifacts(self, session_id: str) -> list[str]:
         record = self._require_session_record(session_id)
         return list(record.artifact_paths)
+
+    def get_capabilities(self, session_id: str) -> dict[str, object]:
+        record = self._require_session_record(session_id)
+        return build_session_capabilities(record.session_id, record.connectors)
+
+    def get_service_capabilities(self) -> dict[str, object]:
+        return build_service_capabilities()
 
     def delete_session(self, session_id: str) -> SessionInfo:
         with self._lock:
@@ -255,6 +275,7 @@ class SessionManager:
                 workspace=record.code_dir,
                 python_executable=str(record.python_executable),
                 extra_env=extra_env,
+                script_source=build_session_bootstrap_source(request.code),
             )
             after = set(_snapshot_files(record.code_dir))
             new_artifacts = sorted(after - before)
@@ -304,6 +325,10 @@ class SessionManager:
             "PYTHONNOUSERSITE": "1",
             "VIRTUAL_ENV": str(record.venv_dir),
         }
+        gcp_config = record.connectors.gcp if record.connectors and record.connectors.gcp else None
+        if gcp_config is not None:
+            env["GOOGLE_CLOUD_PROJECT"] = gcp_config.project_id
+            env["GCLOUD_PROJECT"] = gcp_config.project_id
         return env
 
     def _require_session_record(self, session_id: str) -> SessionRecord:

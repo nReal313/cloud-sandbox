@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
-from .auth import AuthenticationError, require_bearer_auth
+from .connectors import parse_session_connectors
 from .executor import execute_python
 from .models import (
     ExecRequest,
@@ -142,10 +142,13 @@ def parse_session_create_request(payload: Any) -> SessionCreateRequest:
     if runtime_class is not None and (not isinstance(runtime_class, str) or not runtime_class.strip()):
         raise ValueError("runtime_class must be a non-empty string")
 
+    connectors = parse_session_connectors(payload.get("connectors"))
+
     return SessionCreateRequest(
         ttl_seconds=normalized_ttl,
         image=image.strip() if isinstance(image, str) else None,
         runtime_class=runtime_class.strip() if isinstance(runtime_class, str) else None,
+        connectors=connectors,
     )
 
 
@@ -189,10 +192,8 @@ class SandboxAPI:
         self,
         *,
         session_manager: SessionManager | None = None,
-        auth_token: str | None = None,
     ) -> None:
         self.session_manager = session_manager or _build_default_session_manager()
-        self.auth_token = auth_token
 
     def route(
         self,
@@ -210,8 +211,6 @@ class SandboxAPI:
             if method == "DELETE":
                 return self._handle_delete(normalized_path, headers)
             return HTTPStatus.NOT_FOUND, {"error": "not found"}
-        except AuthenticationError as exc:
-            return HTTPStatus.UNAUTHORIZED, {"error": str(exc)}
         except ValueError as exc:
             return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
         except KeyError as exc:
@@ -223,12 +222,11 @@ class SandboxAPI:
             logger.exception("unexpected sandbox error")
             return HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "sandbox request failed"}
 
-    def _authorize(self, headers: Mapping[str, str]) -> None:
-        require_bearer_auth(headers, self.auth_token)
-
     def _handle_get(self, path: str, headers: Mapping[str, str]) -> tuple[HTTPStatus, dict[str, Any]]:
         if path == "/health":
             return HTTPStatus.OK, {"status": "ok"}
+        if path == "/capabilities":
+            return HTTPStatus.OK, self.session_manager.get_service_capabilities()
         if path == "/":
             return HTTPStatus.OK, {
                 "service": "cloud-sandbox",
@@ -236,16 +234,17 @@ class SandboxAPI:
                 "endpoints": [
                     "/health",
                     "/",
+                    "/capabilities",
                     "/exec",
                     "/sessions",
                     "/sessions/{id}",
                     "/sessions/{id}/exec",
                     "/sessions/{id}/install",
+                    "/sessions/{id}/capabilities",
                     "/sessions/{id}/artifacts",
                 ],
             }
 
-        self._authorize(headers)
         session_path = _split_session_path(path)
         if session_path is None:
             return HTTPStatus.NOT_FOUND, {"error": "not found"}
@@ -253,6 +252,8 @@ class SandboxAPI:
         session_id, action = session_path
         if action is None:
             return HTTPStatus.OK, session_to_dict(self.session_manager.get_session(session_id))
+        if action == "capabilities":
+            return HTTPStatus.OK, self.session_manager.get_capabilities(session_id)
         if action == "artifacts":
             return HTTPStatus.OK, {
                 "session_id": session_id,
@@ -267,27 +268,26 @@ class SandboxAPI:
         payload: Any | None,
     ) -> tuple[HTTPStatus, dict[str, Any]]:
         if path == "/exec":
-            self._authorize(headers)
             request = parse_exec_request(payload)
             result = execute_python(request)
             return HTTPStatus.OK, result_to_dict(result)
 
         if path == "/sessions":
-            self._authorize(headers)
             request = parse_session_create_request(payload)
             session, created = self.session_manager.create_session(
                 ttl_seconds=request.ttl_seconds,
                 image=request.image,
                 runtime_class=request.runtime_class,
+                connectors=request.connectors,
                 idempotency_key=_header_value(headers, "Idempotency-Key"),
             )
             status = HTTPStatus.CREATED if created else HTTPStatus.OK
             return status, {
                 "created": created,
                 "session": session_to_dict(session),
+                "capabilities": self.session_manager.get_capabilities(session.session_id),
             }
 
-        self._authorize(headers)
         session_path = _split_session_path(path)
         if session_path is None:
             return HTTPStatus.NOT_FOUND, {"error": "not found"}
@@ -310,7 +310,6 @@ class SandboxAPI:
         return HTTPStatus.NOT_FOUND, {"error": "not found"}
 
     def _handle_delete(self, path: str, headers: Mapping[str, str]) -> tuple[HTTPStatus, dict[str, Any]]:
-        self._authorize(headers)
         session_path = _split_session_path(path)
         if session_path is None:
             return HTTPStatus.NOT_FOUND, {"error": "not found"}
@@ -377,9 +376,8 @@ def create_server(
     port: int = 8080,
     *,
     session_manager: SessionManager | None = None,
-    auth_token: str | None = None,
 ) -> ThreadingHTTPServer:
-    api = SandboxAPI(session_manager=session_manager, auth_token=auth_token)
+    api = SandboxAPI(session_manager=session_manager)
 
     class RequestHandler(SandboxHTTPRequestHandler):
         sandbox_api = api
@@ -391,8 +389,7 @@ def create_server(
 
 def run_server(host: str = "0.0.0.0", port: int = 8080) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    auth_token = _env_text("SANDBOX_AUTH_TOKEN")
-    server = create_server(host=host, port=port, auth_token=auth_token)
+    server = create_server(host=host, port=port)
     logger.info("cloud-sandbox listening on %s:%s", host, port)
     try:
         server.serve_forever()

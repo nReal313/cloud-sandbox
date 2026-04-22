@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from cloud_sandbox.models import ExecRequest
+from cloud_sandbox.models import ExecRequest, GcpConnectorConfig, SessionConnectorConfig
 from cloud_sandbox.sessions import SessionManager
 
 
@@ -76,6 +76,26 @@ class SessionManagerTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 1)
         self.assertIn("boom", session_after_install.last_error or "")
         self.assertEqual(session_after_install.installed_packages, [])
+
+    def test_session_capabilities_reflect_gcp_connectors(self) -> None:
+        session, _ = self.manager.create_session(
+            ttl_seconds=30,
+            connectors=SessionConnectorConfig(
+                gcp=GcpConnectorConfig(
+                    project_id="sandbox-proj",
+                    bigquery_default_dataset="analytics",
+                    gcs_bucket="sandbox-bucket",
+                    firestore_collection="session_metadata",
+                )
+            ),
+        )
+
+        capabilities = self.manager.get_capabilities(session.session_id)
+
+        self.assertTrue(capabilities["connectors"]["gcp"]["enabled"])
+        self.assertEqual(capabilities["connectors"]["gcp"]["project_id"], "sandbox-proj")
+        self.assertIn("query_df", capabilities["connectors"]["gcp"]["bigquery"]["methods"])
+        self.assertEqual(capabilities["runtime"]["bootstrap_module"], "_cloud_sandbox_runtime.py")
 
 
 if __name__ == "__main__":
