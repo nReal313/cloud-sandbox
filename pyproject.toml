@@ -8,6 +8,10 @@ version = "0.1.0"
 description = "Prototype sandbox service for agent-driven code execution"
 readme = "README.md"
 requires-python = ">=3.11"
+dependencies = [
+  "deepagents>=0.5.0",
+  "langchain-google-genai>=3.0.0",
+]
 license = {text = "MIT"}
 authors = [
   {name = "Metricsamp"},
@@ -17,5 +21,10 @@ authors = [
 cloud-sandbox = "cloud_sandbox.__main__:main"
 
 [tool.setuptools]
-packages = ["cloud_sandbox"]
+packages = ["cloud_sandbox", "agents"]
 
+[tool.uv]
+package = true
+
+[dependency-groups]
+dev = []
