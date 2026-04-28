@@ -174,9 +174,24 @@ class ServerRoutingTests(unittest.TestCase):
         self.assertEqual(payload["result"]["stdout"], "sandbox-proj\n")
         self.assertIn("artifact.txt", payload["result"]["artifact_paths"])
 
+        status, payload = self.api.route(
+            "POST",
+            f"/sessions/{session_id}/shell",
+            {},
+            {
+                "command": "printf shell-ok > shell-artifact.txt && cat shell-artifact.txt",
+                "timeout_seconds": 5,
+            },
+        )
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertEqual(payload["result"]["exit_code"], 0)
+        self.assertEqual(payload["result"]["stdout"], "shell-ok")
+        self.assertIn("shell-artifact.txt", payload["result"]["artifact_paths"])
+
         status, payload = self.api.route("GET", f"/sessions/{session_id}", {}, None)
         self.assertEqual(status, HTTPStatus.OK)
         self.assertIn("artifact.txt", payload["artifact_paths"])
+        self.assertIn("shell-artifact.txt", payload["artifact_paths"])
         self.assertEqual(payload["last_exec_exit_code"], 0)
         self.assertEqual(payload["connectors"]["gcp"]["project_id"], "sandbox-proj")
 
