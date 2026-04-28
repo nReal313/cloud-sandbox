@@ -1,49 +1,179 @@
 # Terraform
 
-This directory provisions the Google Cloud service account and Workload Identity binding that the sandbox pod uses in GKE.
+This Terraform setup is intentionally staged. GKE, Workload Identity, Kubernetes
+resources, and optional data IAM grants have different dependencies, so each
+stage is applied separately.
 
-## What it creates
+## Stages
 
-- one Google service account for the sandbox workload
-- project-level IAM roles for BigQuery job execution and Firestore access
-- optional dataset-level BigQuery access
-- optional bucket-level GCS access
-- Workload Identity binding from the Kubernetes service account to the Google service account
+1. `stages/01-project`
+   Enables required Google Cloud APIs.
 
-## How to use
+2. `stages/02-cluster`
+   Creates the regional GKE Standard cluster, a regular system node pool, and a
+   gVisor-enabled sandbox node pool.
+
+3. `stages/03-workload-identity`
+   Creates the Google service account, grants project-level runtime roles, and
+   binds the Kubernetes service account identity to the Google service account.
+
+4. `stages/04-kubernetes`
+   Uses local `gcloud` and `kubectl` to apply the namespace, Kubernetes service
+   account, Deployment, internal Service, direct LoadBalancer Service, Gateway,
+   and HTTPRoute.
+
+5. `stages/05-data-access`
+   Optional. Grants dataset-level BigQuery and bucket-level GCS access to the
+   sandbox Google service account. Only use this after the datasets/buckets
+   exist and your Terraform identity can manage their IAM.
+
+## Apply Order
+
+The easiest path is the deploy script:
 
 ```bash
 cd terraform
-cp terraform.tfvars.example terraform.tfvars
+./deploy.sh
+```
+
+Edit the variables at the top of `deploy.sh`, or override them with environment
+variables:
+
+```bash
+PROJECT_ID=metricsamp REGION=us-east1 ./deploy.sh
+```
+
+To skip the Terraform approval prompt for each stage:
+
+```bash
+AUTO_APPROVE=true ./deploy.sh
+```
+
+The script applies stages 1-4 in order and passes the Google service account
+email from stage 3 into stage 4 automatically.
+
+Manual staged apply is still available. Run these from the repo root:
+
+```bash
+cd terraform/stages/01-project
+terraform init
+terraform apply
+
+cd ../02-cluster
+terraform init
+terraform apply
+
+cd ../03-workload-identity
+terraform init
+terraform apply
+
+cd ../04-kubernetes
 terraform init
 terraform apply
 ```
 
-The default values assume:
+The Kubernetes stage requires local `gcloud` and `kubectl` to be installed and
+authenticated. It runs `gcloud container clusters get-credentials` before
+applying manifests.
 
-- the GKE cluster and the Google service account live in the same project
-- the Kubernetes service account is named `cloud-sandbox`
-- the namespace is `sandbox`
+The data-access stage is optional:
 
-## Outputs
-
-The module prints:
-
-- the Google service account email
-- the Workload Identity member string
-- the Kubernetes service account annotations you should apply
-- a `kubectl annotate` command you can run directly
-
-## Kubernetes service account annotation
-
-The pod deployment in `k8s/base/deployment.yaml` uses the `cloud-sandbox` Kubernetes service account.
-Apply the Terraform output to that service account so GKE can mint tokens for the Google service account:
-
-```yaml
-metadata:
-  annotations:
-    iam.gke.io/gcp-service-account: cloud-sandbox-runtime@my-gcp-project.iam.gserviceaccount.com
-    iam.gke.io/return-principal-id-as-email: "true"
+```bash
+cd ../05-data-access
+terraform init
+terraform apply
 ```
 
-The exact email value comes from Terraform output.
+By default, `05-data-access/terraform.tfvars` leaves both maps empty:
+
+```hcl
+bigquery_dataset_roles = {}
+gcs_bucket_roles       = {}
+```
+
+Add entries only for resources that already exist, for example:
+
+```hcl
+bigquery_dataset_roles = {
+  analytics = "roles/bigquery.dataViewer"
+}
+
+gcs_bucket_roles = {
+  sandbox-bucket = "roles/storage.objectAdmin"
+}
+```
+
+## Current Defaults
+
+The staged `terraform.tfvars` files currently target:
+
+```hcl
+project_id      = "metricsamp"
+region          = "us-central1"
+container_image = "alyosha313/cloud_sandbox:v1.0.2"
+```
+
+The node pools are intentionally small to avoid quota issues:
+
+```hcl
+system_machine_type  = "e2-medium"
+system_disk_size_gb  = 20
+system_disk_type     = "pd-standard"
+sandbox_machine_type = "e2-medium"
+sandbox_disk_size_gb = 20
+sandbox_disk_type    = "pd-standard"
+```
+
+## Gateway URL
+
+After stage 4 completes, get the Gateway IP:
+
+```bash
+kubectl get gateway cloud-sandbox-gateway \
+  -n sandbox \
+  -o jsonpath='{.status.addresses[0].value}'
+```
+
+Build the base URL:
+
+```bash
+SANDBOX_URL="http://$(kubectl get gateway cloud-sandbox-gateway -n sandbox -o jsonpath='{.status.addresses[0].value}')"
+curl "$SANDBOX_URL/health"
+```
+
+There is also a direct LoadBalancer Service fallback:
+
+```bash
+SANDBOX_URL="http://$(kubectl get service cloud-sandbox-public -n sandbox -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+curl "$SANDBOX_URL/health"
+```
+
+Expected response:
+
+```json
+{"status":"ok"}
+```
+
+## Cleanup
+
+Destroy in reverse order:
+
+```bash
+cd terraform/stages/05-data-access
+terraform destroy
+
+cd ../04-kubernetes
+terraform destroy
+
+cd ../03-workload-identity
+terraform destroy
+
+cd ../02-cluster
+terraform destroy
+
+cd ../01-project
+terraform destroy
+```
+
+For `01-project`, API resources use `disable_on_destroy = false`, so destroying
+the stage removes Terraform state ownership but does not disable APIs.
