@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from time import perf_counter
 
-from .models import ExecRequest, ExecResult
+from .models import ExecRequest, ExecResult, ShellRequest
 from .validation import validate_workspace_filename
 
 _DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -125,6 +125,59 @@ def execute_python_in_workspace(
     try:
         completed = subprocess.run(
             [executable, "-I", str(script_path)],
+            input=(request.stdin or "").encode("utf-8"),
+            cwd=workspace,
+            env=env,
+            capture_output=True,
+            check=False,
+            timeout=request.timeout_seconds,
+        )
+        exit_code = completed.returncode
+        stdout = completed.stdout.decode("utf-8", errors="replace")
+        stderr = completed.stderr.decode("utf-8", errors="replace")
+        timed_out = False
+    except subprocess.TimeoutExpired as exc:
+        exit_code = 124
+        stdout = (exc.stdout or b"").decode("utf-8", errors="replace")
+        stderr = (exc.stderr or b"").decode("utf-8", errors="replace")
+        stderr = f"{stderr}\n[timeout after {request.timeout_seconds:g}s]".strip()
+        timed_out = True
+
+    after = _snapshot_files(workspace)
+    artifact_paths = sorted(after - before)
+    duration_ms = int((perf_counter() - started) * 1000)
+    return ExecResult(
+        exit_code=exit_code,
+        stdout=stdout,
+        stderr=stderr,
+        duration_ms=duration_ms,
+        timed_out=timed_out,
+        artifact_paths=artifact_paths,
+    )
+
+
+def execute_shell_in_workspace(
+    request: ShellRequest,
+    *,
+    workspace: Path,
+    python_executable: str | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> ExecResult:
+    started = perf_counter()
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write_workspace_files(workspace, request.files)
+
+    before = _snapshot_files(workspace)
+    env = _build_env(
+        workspace,
+        request.env,
+        extra_env=extra_env,
+        python_executable=python_executable,
+    )
+
+    try:
+        completed = subprocess.run(
+            ["/bin/sh", "-lc", request.command],
             input=(request.stdin or "").encode("utf-8"),
             cwd=workspace,
             env=env,
