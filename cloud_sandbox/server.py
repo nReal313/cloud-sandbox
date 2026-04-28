@@ -15,6 +15,7 @@ from .models import (
     ExecRequest,
     InstallRequest,
     SessionCreateRequest,
+    ShellRequest,
     install_result_to_dict,
     result_to_dict,
     session_to_dict,
@@ -120,6 +121,61 @@ def parse_exec_request(payload: Any) -> ExecRequest:
         stdin=stdin,
         env=cleaned_env,
         files=cleaned_files,
+    )
+
+
+def _parse_execution_common(payload: dict[str, Any], *, default_timeout_seconds: float) -> tuple[float, str, dict[str, str], dict[str, str]]:
+    timeout_seconds = payload.get("timeout_seconds", default_timeout_seconds)
+    if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)):
+        raise ValueError("timeout_seconds must be a number")
+    timeout_seconds = float(timeout_seconds)
+    if not math.isfinite(timeout_seconds):
+        raise ValueError("timeout_seconds must be finite")
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be greater than zero")
+
+    stdin = payload.get("stdin", "")
+    if stdin is None:
+        stdin = ""
+    if not isinstance(stdin, str):
+        raise ValueError("stdin must be a string")
+
+    env = payload.get("env", {})
+    if not isinstance(env, dict):
+        raise ValueError("env must be an object")
+    cleaned_env: dict[str, str] = {}
+    for key, value in env.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise ValueError("env keys and values must be strings")
+        cleaned_env[key] = value
+
+    files = payload.get("files", {})
+    if not isinstance(files, dict):
+        raise ValueError("files must be an object")
+    cleaned_files: dict[str, str] = {}
+    for key, value in files.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise ValueError("files keys and values must be strings")
+        cleaned_files[key] = value
+
+    return timeout_seconds, stdin, cleaned_env, cleaned_files
+
+
+def parse_shell_request(payload: Any) -> ShellRequest:
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+
+    command = payload.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise ValueError("command must be a non-empty string")
+
+    timeout_seconds, stdin, env, files = _parse_execution_common(payload, default_timeout_seconds=60.0)
+    return ShellRequest(
+        command=command,
+        timeout_seconds=timeout_seconds,
+        stdin=stdin,
+        env=env,
+        files=files,
     )
 
 
@@ -239,6 +295,7 @@ class SandboxAPI:
                     "/sessions",
                     "/sessions/{id}",
                     "/sessions/{id}/exec",
+                    "/sessions/{id}/shell",
                     "/sessions/{id}/install",
                     "/sessions/{id}/capabilities",
                     "/sessions/{id}/artifacts",
@@ -296,6 +353,13 @@ class SandboxAPI:
         if action == "exec":
             request = parse_exec_request(payload)
             session, result = self.session_manager.exec_code(session_id, request)
+            return HTTPStatus.OK, {
+                "session": session_to_dict(session),
+                "result": result_to_dict(result),
+            }
+        if action == "shell":
+            request = parse_shell_request(payload)
+            session, result = self.session_manager.exec_shell(session_id, request)
             return HTTPStatus.OK, {
                 "session": session_to_dict(session),
                 "result": result_to_dict(result),
