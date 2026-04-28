@@ -17,8 +17,8 @@ from .connectors import (
     build_session_capabilities,
     render_runtime_source,
 )
-from .executor import build_session_bootstrap_source, execute_python_in_workspace, _snapshot_files
-from .models import ExecRequest, ExecResult, InstallResult, SessionConnectorConfig, SessionInfo
+from .executor import build_session_bootstrap_source, execute_python_in_workspace, execute_shell_in_workspace, _snapshot_files
+from .models import ExecRequest, ExecResult, InstallResult, SessionConnectorConfig, SessionInfo, ShellRequest
 from .validation import normalize_session_ttl, validate_requirements
 
 SESSION_STATUS_ACTIVE = "active"
@@ -145,7 +145,14 @@ class SessionManager:
         root_dir = self._root_dir / session_id
         code_dir, _, cache_dir, pip_cache_dir = _ensure_workspace_dirs(root_dir)
         venv_dir = root_dir / "venv"
-        env_builder = venv.EnvBuilder(with_pip=True, clear=True, symlinks=os.name != "nt")
+        # The sandbox image carries the always-on connector libraries; let the session venv
+        # see those system packages so generated code can import them without reinstalling.
+        env_builder = venv.EnvBuilder(
+            with_pip=True,
+            clear=True,
+            symlinks=os.name != "nt",
+            system_site_packages=True,
+        )
         env_builder.create(str(venv_dir))
         python_executable = _venv_python_path(venv_dir)
         if not python_executable.exists():
@@ -276,6 +283,38 @@ class SessionManager:
                 python_executable=str(record.python_executable),
                 extra_env=extra_env,
                 script_source=build_session_bootstrap_source(request.code),
+            )
+            after = set(_snapshot_files(record.code_dir))
+            new_artifacts = sorted(after - before)
+            combined_artifacts = list(record.artifact_paths)
+            for artifact in new_artifacts:
+                if artifact not in combined_artifacts:
+                    combined_artifacts.append(artifact)
+            record.artifact_paths = sorted(combined_artifacts)
+            now = _utcnow()
+            record.last_exec_at = now
+            record.last_exec_started_at = started
+            record.last_exec_finished_at = now
+            record.last_exec_exit_code = result.exit_code
+            record.last_error = result.stderr if result.exit_code != 0 or result.timed_out else None
+            record.updated_at = now
+            result.session_id = session_id
+            return record.to_info(), result
+
+    def exec_shell(self, session_id: str, request: ShellRequest) -> tuple[SessionInfo, ExecResult]:
+        record = self._require_session_record(session_id)
+        session_lock = self._require_session_lock(session_id)
+        with session_lock:
+            if record.status != SESSION_STATUS_ACTIVE:
+                raise KeyError(f"session is not active: {session_id}")
+            started = _utcnow()
+            before = set(_snapshot_files(record.code_dir))
+            extra_env = self._build_session_env(record)
+            result = execute_shell_in_workspace(
+                request,
+                workspace=record.code_dir,
+                python_executable=str(record.python_executable),
+                extra_env=extra_env,
             )
             after = set(_snapshot_files(record.code_dir))
             new_artifacts = sorted(after - before)
