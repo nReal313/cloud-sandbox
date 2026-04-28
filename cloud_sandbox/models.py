@@ -14,6 +14,15 @@ class ExecRequest:
 
 
 @dataclass(slots=True)
+class ShellRequest:
+    command: str
+    timeout_seconds: float = 60.0
+    stdin: str = ""
+    env: dict[str, str] = field(default_factory=dict)
+    files: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class ExecResult:
     exit_code: int
     stdout: str
