@@ -19,10 +19,22 @@ not a full production isolation stack.
 ## Local run
 
 ```bash
-python -m cloud_sandbox
+uv run python -m cloud_sandbox
 ```
 
 The server listens on `PORT` if set, otherwise `8080`.
+
+Install/sync the local development environment with:
+
+```bash
+uv sync
+```
+
+Run tests with:
+
+```bash
+uv run python -m unittest discover -s tests
+```
 
 ## Health check
 
@@ -91,6 +103,17 @@ curl -X POST http://localhost:8080/sessions/<session-id>/exec \
   }'
 ```
 
+To run shell commands inside a session:
+
+```bash
+curl -X POST http://localhost:8080/sessions/<session-id>/shell \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "command": "pwd && ls -la",
+    "timeout_seconds": 10
+  }'
+```
+
 Inside generated code, the `sandbox` object exposes:
 
 ```python
@@ -131,6 +154,23 @@ kubectl apply -f k8s/runtimeclass-gvisor.yaml
 kubectl apply -k k8s/base
 ```
 
+The base manifests include a Gateway API route for external HTTP access:
+
+```bash
+kubectl get gateway cloud-sandbox-gateway
+```
+
+The Gateway exposes the sandbox HTTP API (`/health`, `/sessions`, `/sessions/{id}/exec`, and related endpoints). An MCP tool or agent runtime can call this URL directly, or you can put an MCP wrapper in front of it. The sandbox itself does not expose an MCP protocol endpoint yet.
+
+## Agent adapter
+
+The `agents/` package contains a Deep Agents adapter for this sandbox.
+
+- `CloudSandboxBackend.execute()` supports Deep Agents shell/file workflows by routing shell commands through the session Python exec path.
+- `run_injected_python` is added automatically when using `create_cloud_sandbox_deep_agent(...)`.
+- Use `run_injected_python` for Python code that needs injected globals such as `sandbox`, `sandbox_capabilities`, BigQuery, Firestore, or GCS.
+- Normal shell-launched Python, such as `python script.py`, does not receive injected sandbox globals.
+
 ## Workload identity
 
 If you want the sandbox pod to use Google Cloud APIs from inside generated code, apply the Terraform stack in `terraform/` first.
@@ -147,14 +187,17 @@ Kubernetes service account.
 - `GET /sessions/{id}`
 - `DELETE /sessions/{id}`
 - `POST /sessions/{id}/exec`
+- `POST /sessions/{id}/shell`
 - `POST /sessions/{id}/install`
 - `GET /sessions/{id}/capabilities`
 - `GET /sessions/{id}/artifacts`
 - Python subprocess execution
+- shell command execution in session workspaces
 - temp workspaces for each request
 - session-backed workspaces and virtualenvs
 - session-scoped GCP connector config and runtime injection
 - gVisor-ready Kubernetes deployment scaffold
+- Deep Agents adapter scaffold in `agents/`, including a cloud sandbox client and a backend that maps a Deep Agents thread id to a sandbox session via `Idempotency-Key`
 
 ## What is not here yet
 
@@ -163,3 +206,4 @@ Kubernetes service account.
 - object storage integration
 - Kubernetes pod-per-exec orchestration
 - MCP wrappers
+- full ML skill agents
